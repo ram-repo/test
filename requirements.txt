@@ -1,0 +1,10 @@
+kubernetes==11.0.0
+requests==2.22.0
+logging2
+boto3==1.10.34
+python-dateutil==2.8.0
+pytest==5.4.3
+mock==4.0.2
+coverage
+pytest-cov
+aws_requests_auth
