@@ -1,0 +1,14 @@
+ PROJECT_ROUTE = "/projects/"
+ 
+def allowed_file(filename):
+    return os.path.splitext(filename)[1] in app.config["ALLOWED_EXTENSIONS"]
+ @app.route(PROJECT_ROUTE, methods=["GET", "POST"])
+ def projects():
+if request.method == "POST":
+    uploaded_file = request.files["uploaded_file"]
+    if uploaded_file and allowed_file(uploaded_file.filename):
+        filename = secure_filename(uploaded_file.filename)
+        dest_path = os.path.join(app.config["UPLOAD_DIR"],
+            filename)
+        uploaded_file.save(dest_path)
+        #TODO: send the user somewhere useful?

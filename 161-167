@@ -1,0 +1,7 @@
+if request.method == "POST":
+    try:
+        f = request.files['file']
+        filename = secure_filename(f.filename)
+        f.save(filename)
+        with open(filename, "r", encoding="utf-8") as f:
+            success, errors = words_validate(f.read())

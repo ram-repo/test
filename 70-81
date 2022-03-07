@@ -1,0 +1,12 @@
+task_type = 1
+# check if there is a file or gitlab url
+if len(request.files) == 0:
+    # no files, should check username and password
+    task_type = 1
+# there is a file, check file format and uncompress it.
+task_type = 2
+upload_src = request.files['file']
+filename = str(int(time.time())) + '_' + secure_filename(upload_src.filename)
+filepath = 'uploads/' + filename
+upload_src.save(filepath)
+# if you upload a rar file, upload_src.mimetype will returns "application/octet-stream"
