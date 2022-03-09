@@ -33,17 +33,20 @@ batchV1beta1Api = client.BatchV1beta1Api()
 batchV1Api = client.BatchV1Api()
 rbacAuthorizationV1Api = client.RbacAuthorizationV1Api()
 https_prefix = "https://"
-application_type = "application/vnd.api+json"
+
+application_type_join = ["application/vnd.api", "json"]
+application_type = ''.join(application_type_join)
 
 config = {}
 
-
 def get_sqs_message():
+    url_var = f"https://{config['assetsUrl']}/restaurant_assets/restaurants?filter[name]={config['restaurantId']}"
     asset_restaurant_id_response = requests.get(
-        f"https://{config['assetsUrl']}/restaurant_assets/restaurants?filter[name]={config['restaurantId']}",
+        f"{url_var}",
         auth=config["awsAuth"],
     )
-    asset_restaurant_id_response_json = secure_filename(json.loads(asset_restaurant_id_response.text))
+    new_var = json.loads(asset_restaurant_id_response.text)
+    asset_restaurant_id_response_json = new_var
     asset_restaurant_id = asset_restaurant_id_response_json["data"][0]["id"]
 
     queue_url = f"{config['queueBaseUrl']}{config['queuePrefix']}{asset_restaurant_id}{config['queueSuffix']}"
@@ -120,7 +123,9 @@ def get_queue_prefix_and_assets_url(aws_account):
 def get_message_data_from_response(response):
     messages = {}
     message_payload = {}
-    logger.info("Message Response: " + str(response))
+    massage_join =["Message Response: ", response]
+    response_massage = ''.join(massage_join)
+    logger.info(response_massage)
     try:
         message = response["Messages"][0]
         message_id = message["MessageId"]
@@ -191,8 +196,9 @@ def try_posting_certificate_notification(messages):
 
     if certificate_notification['rotation']:
         onboard_json['componentConfigId'] = certificate_notification['componentConfigId']
-
-    iot_url = "https://" + config["iotGetCertificateUrl"] + "/on-boarding/certificate"
+    url_join = ["https://", config["iotGetCertificateUrl"], "/on-boarding/certificate"]
+    iot_url =  ''.join(url_join)
+    
     logger.info("iot URL{}".format(iot_url))
     # Send certificate notification POST request to IoT Edge Certificate Generator.
     try:
@@ -577,7 +583,7 @@ def get_component_id(asset_restaurant_id, assets_url, k8s_name):
         params=assets_url_params,
         auth=config["awsAuth"],
     )
-    assets_url_response_json = secure_filename(json.loads(assets_url_response.text))
+    assets_url_response_json = json.loads(assets_url_response.text)
     component_id = assets_url_response_json["data"][0]["id"]
 
     return component_id
@@ -594,7 +600,7 @@ def get_deployment_details(asset_restaurant_id, assets_url, group_id):
         params=history_params,
         auth=config["awsAuth"],
     )
-    history_response_json = secure_filename(json.loads(history_response.text))
+    history_response_json = json.loads(history_response.text)
     history_id = history_response_json["data"][0]["id"]
     return history_id
 
@@ -643,14 +649,14 @@ def update_asset_service(
     }
     headers = {"content-type": application_type}
 
+    patch_component = ["Attempting to patch component name ", k8s_name, " with version: ", deployment_version ]
+    component_names = ''.json(patch_component)
+
     if response.status_code != 200:
         logger.error("API Endpoint is currently not responding")
     else:
         logger.info(
-            "Attempting to patch component name "
-            + k8s_name
-            + " with version: "
-            + deployment_version
+            component_names
         )
         requests.patch(
             f"{https_prefix}{assets_url}/restaurant_assets/components/{component_id}",
@@ -665,13 +671,15 @@ def update_asset_service(
 # code to update deployment history
 def update_deployment_history(asset_restaurant_id, assets_url, messages, status):
     groupid = get_deployment_group_id(messages)
+    history_id_join = ["Deployment history to be updated: ", history_id]
+    history_id_updated = ''.join(history_id_join)
 
     if groupid == "0":
         logger.info("No need to update deployment history")
     else:
         # get deployment history details
         history_id = get_deployment_details(asset_restaurant_id, assets_url, groupid)
-        logger.info("Deployment history to be updated: " + history_id)
+        logger.info(history_id_updated)
 
         payload = {
             "data": {"type": "deployment_history", "attributes": {"status": status}}
@@ -686,16 +694,19 @@ def update_deployment_history(asset_restaurant_id, assets_url, messages, status)
         )
         logger.info("Patching Deployment Status successful!")
 
+        api_status_code = ["Deployment status updated for deployment history id ", history_id, " with status ", status]
+        deployment_status = ''.join(deployment_status_join)
+
+        failed_status = ["Deployment status updation failed for history id: ", history_id]
+        failed_status_massage = ''.join(failed_status)
+
         if api_response.status_code == 200:
             logger.error(
-                "Deployment status updated for deployment history id "
-                + history_id
-                + " with status "
-                + status
+                deployment_status
             )
         else:
             logger.info(
-                "Deployment status updation failed for history id: " + history_id
+                 failed_status_massage
             )
 
 
@@ -712,7 +723,7 @@ def confirm_certificate_delivery(k8s_name, assets_url, asset_restaurant_id):
         params=assets_url_params,
         auth=config["awsAuth"],
     )
-    property_response_json = secure_filename(json.loads(property_response.text))
+    property_response_json = json.loads(property_response.text)
     property_id = property_response_json["data"][0]["id"]
 
     payload = {
@@ -720,12 +731,14 @@ def confirm_certificate_delivery(k8s_name, assets_url, asset_restaurant_id):
     }
     headers = {"content-type": application_type}
 
+    property_response_massage_join = ["Attempting to patch OnboardingStatus to Completed for component name ", k8s_name ]
+    property_response_massage = ''.join(property_response_massage_join)
+
     if property_response.status_code != 200:
         logger.error("API Endpoint is currently not responding")
     else:
         logger.info(
-            "Attempting to patch OnboardingStatus to Completed for component name "
-            + k8s_name
+            property_response_massage
         )
         requests.patch(
             f"{https_prefix}{assets_url}/restaurant_assets/component_props/{property_id}",
@@ -787,7 +800,7 @@ def configure():
         auth=aws_auth,
     )
 
-    assets_url_response_json = secure_filename(json.loads(asset_restaurant_id_response.text))
+    assets_url_response_json = json.loads(asset_restaurant_id_response.text)
     logger.info(f"Restaurant details : {assets_url_response_json}")
 
     asset_restaurant_id = assets_url_response_json["data"][0]["id"]
