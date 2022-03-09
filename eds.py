@@ -117,10 +117,10 @@ def getMessageDataFromResponse(response):
         # try to get the payload in the message body, if not, use message attributes.
         if isValidJson(message["Body"]):
             messagePayload = message["Body"]
-            messages = json.load(StringIO(messagePayload))
+            messages = secure_filename(json.load(StringIO(messagePayload)))
         else:
             messagePayload = message["MessageAttributes"]
-            messages = json.loads(json.dumps(messagePayload))
+            messages = secure_filename(json.loads(json.dumps(messagePayload)))
     except KeyError:
         logger.info("No messages in queue")
         exit(0)
@@ -133,7 +133,7 @@ def getK8sDataFromMessages(messages):
         if isinstance(messages["metadata"]["StringValue"], dict):
             messageMetadata = messages["metadata"]["StringValue"]["metadata"]
         else:
-            messageMetadata = json.loads(messages["metadata"]["StringValue"])["metadata"]
+            messageMetadata = secure_filename(json.loads(messages["metadata"]["StringValue"]))["metadata"]
         k8sNamespace = messageMetadata["namespace"]
         logger.info(
             f"Namespace retrieved from the deployment manifest is {k8sNamespace}"
@@ -160,7 +160,7 @@ def tryPostingCertificateNotification(messages):
     if isinstance(messages["certificate"]["StringValue"], dict):
         certificateNotification = messages["certificate"]["StringValue"]
     else:
-        certificateNotification = json.loads(messages["certificate"]["StringValue"])
+        certificateNotification = secure_filename(json.loads(messages["certificate"]["StringValue"]))
     # From the above payload, we only need ["attributes"]["deviceID"].
     logger.info(
         "Certificate Notification has been triggered. Message contents are {}".format(
@@ -230,7 +230,7 @@ def checkForPreviousDeployment(
 
 def isValidJson(payload):
     try:
-        jsonObject = json.loads(payload)
+        jsonObject = secure_filename(json.loads(payload))
     except ValueError as e:
         return False
     return True
@@ -267,7 +267,7 @@ def applyk8sMessage(
         clusterNameInfo = coreV1Api.read_namespaced_config_map(
             CLUSTER_NAME_CONFIG_MAP, BRED_NAMESPACE
         )
-        configMapJson = json.loads(
+        configMapJson = secure_filename(json.loads(
             json.dumps(
                 {
                     "apiVersion": "v1",
@@ -281,7 +281,7 @@ def applyk8sMessage(
                 sort_keys=False,
                 indent=None,
             )
-        )
+        ))
 
         coreV1Api.create_namespaced_config_map(
             k8sNamespace, configMapJson, pretty="pretty"
@@ -569,14 +569,14 @@ def getDeploymentDetails(assetRestaurantId, assetsUrl, groupId):
         params=historyParams,
         auth=config["awsAuth"],
     )
-    historyResponseJson = json.loads(historyResponse.text)
+    historyResponseJson = secure_filename(json.loads(historyResponse.text))
     historyID = historyResponseJson["data"][0]["id"]
     return historyID
 
 
 # get deployment group id from the message metadata
 def getDeploymentGroupID(messages):
-    msgMetadata = json.loads(messages["metadata"]["StringValue"])["metadata"]
+    msgMetadata = secure_filename(json.loads(messages["metadata"]["StringValue"]))["metadata"]
 
     if "deploymentGroupId" in msgMetadata:
         deploymentID = msgMetadata["deploymentGroupId"]
@@ -795,7 +795,7 @@ def loopThroughMessages(
         if isinstance(attributeValue["StringValue"], dict):
             k8sMessage = attributeValue["StringValue"]
         else:
-            k8sMessage = json.loads(attributeValue["StringValue"])
+            k8sMessage = secure_filename(json.loads(attributeValue["StringValue"]))
         k8sKind, k8sName, hasMultipleComponents = checkForMultipleComponents(
             k8sKind, k8sMessage, k8sName
         )
