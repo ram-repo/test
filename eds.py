@@ -1,12 +1,10 @@
 import os
 import boto3
 import json
-import subprocess
 import requests
 import time
 import sys
 import logging2
-import secure_filename
 from aws_requests_auth.aws_auth import AWSRequestsAuth
 from aws_requests_auth.boto_utils import BotoAWSRequestsAuth
 from uuid import uuid4
@@ -35,23 +33,24 @@ batchV1beta1Api = client.BatchV1beta1Api()
 batchV1Api = client.BatchV1Api()
 rbacAuthorizationV1Api = client.RbacAuthorizationV1Api()
 https_prefix = "https://"
+application_type = "application/vnd.api+json"
 
 config = {}
 
+req_url = requests.get(
+    f"https://{config['assetsUrl']}/restaurant_assets/restaurants?filter[name]={config['restaurantId']}",
+    auth=config["awsAuth"])
 
-def getSQSMessage():
-    assetRestaurantIdResponse = requests.get(
-        f"https://{config['assetsUrl']}/restaurant_assets/restaurants?filter[name]={config['restaurantId']}",
-        auth=config["awsAuth"],
-    )
-    assetRestaurantIdResponseJson = secure_filename(json.loads(assetRestaurantIdResponse.text))
-    assetRestaurantId = assetRestaurantIdResponseJson["data"][0]["id"]
+def get_sqs_message():
+    asset_restaurant_id_response = req_url
+    asset_restaurant_id_response_json = json.loads(asset_restaurant_id_response.text)
+    asset_restaurant_id = asset_restaurant_id_response_json["data"][0]["id"]
 
-    queueUrl = f"{config['queueBaseUrl']}{config['queuePrefix']}{assetRestaurantId}{config['queueSuffix']}"
-    logger.info(f"queueUrl: {queueUrl}")
-    logger.info("Entering to process response")
+    queue_url = f"{config['queueBaseUrl']}{config['queuePrefix']}{asset_restaurant_id}{config['queueSuffix']}"
+    logger.info(f"queue_url: {queue_url}")
+    logger.info("Entering to process response") 
     response = sqs.receive_message(
-        QueueUrl=queueUrl,
+        QueueUrl=queue_url,
         AttributeNames=["All"],
         MaxNumberOfMessages=1,
         MessageAttributeNames=["All"],
@@ -59,184 +58,204 @@ def getSQSMessage():
         WaitTimeSeconds=5,
     )
     logger.info("After completition of response process")
-    messageId, receiptHandle, messages = getMessageDataFromResponse(response)
-    k8sNamespace, componentName, k8sName = getK8sDataFromMessages(messages)
-    logger.info(f"Received message with id of {messageId}")
+    message_id, receipt_handle, messages = get_message_data_from_response(response)
+    k8s_namespace, component_name, k8s_name = get_k8s_data_from_messages(messages)
+    logger.info(f"Received message with id of {message_id}")
 
     logger.info(f"Processed message {messages}")
 
-    primaryResourceKind = loopThroughMessages(
+    primary_resource_kind = loop_through_messages(
         messages,
-        assetRestaurantId,
+        asset_restaurant_id,
         config["assetsUrl"],
-        componentName,
-        k8sName,
-        k8sNamespace,
+        component_name,
+        k8s_name,
+        k8s_namespace,
     )
-    deleteSQSMessage(queueUrl, receiptHandle, messageId)
+    delete_sqs_message(queue_url, receipt_handle, message_id)
 
-    if primaryResourceKind in ["statefulset", "daemonset"]:
-        triggerOpenTest(k8sName)
+    if primary_resource_kind in ["statefulset", "daemonset"]:
+        trigger_open_test(k8s_name)
 
 
-def getQueuePrefixAndAssetsUrl(awsAccount):
+def get_queue_prefix_and_assets_url(aws_account):
     # Adding a condition to check the existing Env
-    if awsAccount == "283388140277":
-        queuePrefix = os.getenv("queuePrefix", "US-EAST-DEV-BRE-ARCH-BRE-")
-        assetsUrl = os.environ.get("assetsUrl", "asset.api.dev.bre.mcd.com")
-        iotGetCertificateUrl = os.environ.get("iotGetCertificateUrl",
-                                              "z13641x6mf.execute-api.us-east-1.amazonaws.com")
-        iotRoleARN = os.environ.get("iotRoleARN",
-                                    "arn:aws:iam::385911300465:role/US-EAST-DEV-US-BRE-ARCH-IoT_API_Role")
+    if aws_account == "283388140277":
+        queue_prefix = os.getenv("queue_prefix", "US-EAST-DEV-BRE-ARCH-BRE-")
+        assets_url = os.environ.get("assets_url", "asset.api.dev.bre.mcd.com")
+        iot_get_certificate_url = os.environ.get("iot_get_certificate_url",
+                                                 "device-api.iot.dev.bre.mcd.com")
+        iot_role_arn = os.environ.get("iot_role_arn",
+                                      "arn:aws:iam::385911300465:role/US-EAST-DEV-US-BRE-ARCH-IoT_API_Role")
 
-    elif awsAccount == "524430043955":
-        queuePrefix = os.getenv("queuePrefix", "US-EAST-PROD-BRE-ARCH-BRE-")
-        assetsUrl = os.environ.get("assetsUrl", "asset.api.prod.bre.mcd.com")
-        iotGetCertificateUrl = os.environ.get("iotGetCertificateUrl",
-                                              "bscp23mys5.execute-api.us-east-1.amazonaws.com")
-        iotRoleARN = os.environ.get("iotRoleARN",
-                                    "arn:aws:iam::687478879033:role/US-EAST-DEV-US-BRE-ARCH-IoT_API_Role")
+    elif aws_account == "524430043955":
+        queue_prefix = os.getenv("queue_prefix", "US-EAST-PROD-BRE-ARCH-BRE-")
+        assets_url = os.environ.get("assets_url", "asset.api.prod.bre.mcd.com")
+        iot_get_certificate_url = os.environ.get("iot_get_certificate_url",
+                                                 "device-api.iot.prod.bre.mcd.com")
+        iot_role_arn = os.environ.get("iot_role_arn",
+                                      "arn:aws:iam::687478879033:role/US-EAST-DEV-US-BRE-ARCH-IoT_API_Role")
 
-    elif awsAccount == "593265675765":
-        queuePrefix = os.getenv("queuePrefix", "US-EAST-INT-BRE-ARCH-BRE-")
-        assetsUrl = os.environ.get("assetsUrl", "asset.api.int.bre.mcd.com")
+    elif aws_account == "593265675765":
+        queue_prefix = os.getenv("queue_prefix", "US-EAST-INT-BRE-ARCH-BRE-")
+        assets_url = os.environ.get("assets_url", "asset.api.int.bre.mcd.com")
+        iot_get_certificate_url = os.environ.get("iot_get_certificate_url",
+                                                 "device-api.iot.int.bre.mcd.com")
+        iot_role_arn = os.environ.get("iot_role_arn",
+                                      "arn:aws:iam::155065244512:role/US-EAST-INT-US-BRE-ARCH-IoT_API_Role")
+    elif aws_account == "688810906228":
+        queue_prefix = os.getenv("queue_prefix", "US-EAST-STG-BRE-ARCH-BRE-")
+        assets_url = os.environ.get("assets_url", "asset.api.stg.bre.mcd.com")
+        iot_get_certificate_url = os.environ.get("iot_get_certificate_url",
+                                                 "device-api.iot.int.bre.mcd.com")
+        iot_role_arn = os.environ.get("iot_role_arn",
+                                      "arn:aws:iam::155065244512:role/US-EAST-INT-US-BRE-ARCH-IoT_API_Role")
+
     else:
-        logger.error("{} AwsAccount is currently not supported ".format(awsAccount))
+        logger.error("{} AwsAccount is currently not supported ".format(aws_account))
         sys.exit(1)
-    return queuePrefix, assetsUrl, iotGetCertificateUrl, iotRoleARN
+    return queue_prefix, assets_url, iot_get_certificate_url, iot_role_arn
 
 
-def getMessageDataFromResponse(response):
+def get_message_data_from_response(response):
     messages = {}
-    messagePayload = {}
+    message_payload = {}
     logger.info("Message Response: " + str(response))
     try:
         message = response["Messages"][0]
-        messageId = message["MessageId"]
-        receiptHandle = message["ReceiptHandle"]
+        message_id = message["MessageId"]
+        receipt_handle = message["ReceiptHandle"]
         # try to get the payload in the message body, if not, use message attributes.
-        if isValidJson(message["Body"]):
-            messagePayload = message["Body"]
-            messages = secure_filename(json.load(StringIO(messagePayload)))
+        if is_valid_json(message["Body"]):
+            message_payload = message["Body"]
+            messages = json.load(StringIO(message_payload))
         else:
-            messagePayload = message["MessageAttributes"]
-            messages = secure_filename(json.loads(json.dumps(messagePayload)))
+            message_payload = message["MessageAttributes"]
+            messages = json.loads(json.dumps(message_payload))
     except KeyError:
         logger.info("No messages in queue")
         exit(0)
-    return messageId, receiptHandle, messages
+    return message_id, receipt_handle, messages
 
 
-def getK8sDataFromMessages(messages):
+def get_k8s_data_from_messages(messages):
     # print(type(messages["metadata"]["StringValue"]["metadata"]))
     try:
         if isinstance(messages["metadata"]["StringValue"], dict):
-            messageMetadata = messages["metadata"]["StringValue"]["metadata"]
+            message_metadata = messages["metadata"]["StringValue"]["metadata"]
         else:
-            messageMetadata = secure_filename(json.loads(messages["metadata"]["StringValue"]))["metadata"]
-        k8sNamespace = messageMetadata["namespace"]
+            message_metadata = json.loads(messages["metadata"]["StringValue"])["metadata"]
+        k8s_namespace = message_metadata["namespace"]
         logger.info(
-            f"Namespace retrieved from the deployment manifest is {k8sNamespace}"
+            f"Namespace retrieved from the deployment manifest is {k8s_namespace}"
         )
-        componentName = messageMetadata["pod"]
+        component_name = message_metadata["pod"]
         logger.info(
-            f"Component name retrieved from the deployment manifest is {componentName}"
+            f"Component name retrieved from the deployment manifest is {component_name}"
         )
-        k8sName = componentName
+        k8s_name = component_name
     except KeyError:
-        k8sNamespace = ""
-        k8sName = ""
-        componentName = ""
+        k8s_namespace = ""
+        k8s_name = ""
+        component_name = ""
         logger.info("No metadata attribute")
-    return k8sNamespace, componentName, k8sName
+    return k8s_namespace, component_name, k8s_name
 
 
-def getNamespace(name):
+def get_namespace(name):
     namespace = name.split("-")
     return namespace[0]
 
+iot_url_link = f"https://" + config["iotGetCertificateUrl"] + "/on-boarding/certificate"
 
-def tryPostingCertificateNotification(messages):
+def try_posting_certificate_notification(messages):
     if isinstance(messages["certificate"]["StringValue"], dict):
-        certificateNotification = messages["certificate"]["StringValue"]
+        certificate_notification = messages["certificate"]["StringValue"]
     else:
-        certificateNotification = secure_filename(json.loads(messages["certificate"]["StringValue"]))
+        certificate_notification = json.loads(messages["certificate"]["StringValue"])
     # From the above payload, we only need ["attributes"]["deviceID"].
     logger.info(
         "Certificate Notification has been triggered. Message contents are {}".format(
-            certificateNotification
+            certificate_notification
         )
     )
-    logger.info("group Id{}".format(certificateNotification['groupId']))
-    onboardJson = {
-        'deviceId': certificateNotification['deviceId'],
-        'restaurantId': certificateNotification['restaurantId'],
-        'pod': certificateNotification['componentName'],
-        'namespace': getNamespace(certificateNotification['componentName']),
-        'componentId': certificateNotification['componentId'],
-        'rotation': certificateNotification['rotation'],
-        'groupId': certificateNotification['groupId']
+    logger.info("group Id{}".format(certificate_notification['groupId']))
+    onboard_json = {
+        'deviceId': certificate_notification['deviceId'],
+        'restaurantId': certificate_notification['restaurantId'],
+        'pod': certificate_notification['componentName'],
+        'namespace': get_namespace(certificate_notification['componentName']),
+        'componentId': certificate_notification['componentId'],
+        'rotation': certificate_notification['rotation'],
+        'groupId': certificate_notification['groupId']
     }
-    
-    if certificateNotification['rotation']:
-        onboardJson['componentConfigId'] = certificateNotification['componentConfigId']
 
-    iotUrl = "https://" + config["iotGetCertificateUrl"] + "/dev/on-boarding/certificate"
-    logger.info("iot URL{}".format(iotUrl))
+    if certificate_notification['rotation']:
+        onboard_json['componentConfigId'] = certificate_notification['componentConfigId']
+
+    iot_url = iot_url_link
+    logger.info("iot URL{}".format(iot_url))
     # Send certificate notification POST request to IoT Edge Certificate Generator.
     try:
-        certificateNotificationRequest = requests.post(
-            iotUrl,
-            json=onboardJson,
+        certificate_notification_request = requests.post(
+            iot_url,
+            json=onboard_json,
             auth=config["awsAuthIoT"]
         )
-        logger.info("response {}".format(certificateNotificationRequest.text))
+        logger.info("response {}".format(certificate_notification_request.text))
     except requests.exceptions.RequestException as err:
         logger.error("Unable to notify the IoT Get Certificate Handler.")
         logger.exception(err)
 
 
-def checkForPreviousDeployment(
-        k8sName,
-        primaryResourceKind,
-        k8sNamespace,
-        previousDeployment,
-        k8sPvName,
-        k8sPvcName,
-        assetRestaurantId,
+def check_for_previous_deployment(
+        k8s_name,
+        primary_resource_kind,
+        k8s_namespace,
+        previous_deployment,
+        k8s_pv_name,
+        k8s_pvc_name,
+        asset_restaurant_id,
 ):
-    if previousDeployment:
-        versionToRollBackTo = getImageVersionFromDeployment(previousDeployment)
+    if previous_deployment:
+        version_to_roll_back_to = get_image_version_from_deployment(previous_deployment)
         logger.info(
-            f"Rolling back deployment '{k8sName}' to version '{versionToRollBackTo}'..."
+            f"Rolling back deployment '{k8s_name}' to version '{version_to_roll_back_to}'..."
         )
-        applyk8sMessage(
-            k8sName,
-            primaryResourceKind,
-            k8sNamespace,
-            previousDeployment,
-            k8sPvName,
-            k8sPvcName,
-            assetRestaurantId,
+        applyk8s_message(
+            k8s_name,
+            primary_resource_kind,
+            k8s_namespace,
+            previous_deployment,
+            k8s_pv_name,
+            k8s_pvc_name,
+            asset_restaurant_id,
         )
         logger.info(
-            f"Successfully rolled back deployment '{k8sName}' to version '{versionToRollBackTo}'"
+            f"Successfully rolled back deployment '{k8s_name}' to version '{version_to_roll_back_to}'"
         )
     else:
         logger.info(
-            f"Cannot roll-back deployment '{k8sName}', as this is a first-time deployment."
+            f"Cannot roll-back deployment '{k8s_name}', as this is a first-time deployment."
         )
 
 
-def isValidJson(payload):
+def is_valid_json(payload):
     try:
-        jsonObject = secure_filename(json.loads(payload))
+        json_object = json.loads(payload)
+        logger.info(
+            f"valid json '{json_object}'"
+        )
+
     except ValueError as e:
+        logger.exception(
+            f"exception details '{e}'"
+        )
         return False
     return True
 
 
-def getImageVersionFromDeployment(deployment):
+def get_image_version_from_deployment(deployment):
     if not isinstance(deployment, client.V1Deployment):
         # if deployment isn't already a V1Deployment object, then assume it's a dictionary and parse
         return deployment["spec"]["template"]["spec"]["containers"][0]["image"].split(
@@ -246,242 +265,249 @@ def getImageVersionFromDeployment(deployment):
         return deployment.spec.template.spec.containers[0].image.split(":")[1]
 
 
-def getImageVersionFromJob(job):
+def get_image_version_from_job(job):
     return job["spec"]["template"]["spec"]["containers"][0]["image"].split(":")[1]
 
 
-def getImageVersionFromCronJob(cronjob):
+def get_image_version_from_cron_job(cronjob):
     return cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0][
         "image"
     ].split(":")[1]
 
 
-def applyk8sMessage(
-        k8sName, k8sKind, k8sNamespace, k8sMessage, k8sPvName, k8sPvcName, assetRestaurantId
+def applyk8s_message(
+        k8s_name, k8s_kind, k8s_namespace, k8s_message, k8s_pv_name, k8s_pvc_name, asset_restaurant_id
 ):
     try:
         coreV1Api.create_namespace(
-            client.V1Namespace(metadata=client.V1ObjectMeta(name=k8sNamespace))
+            client.V1Namespace(metadata=client.V1ObjectMeta(name=k8s_namespace))
         )
 
-        clusterNameInfo = coreV1Api.read_namespaced_config_map(
+        cluster_name_info = coreV1Api.read_namespaced_config_map(
             CLUSTER_NAME_CONFIG_MAP, BRED_NAMESPACE
         )
-        configMapJson = secure_filename(json.loads(
+        config_map_json = json.loads(
             json.dumps(
                 {
                     "apiVersion": "v1",
-                    "data": clusterNameInfo.data,
+                    "data": cluster_name_info.data,
                     "kind": "ConfigMap",
                     "metadata": {
                         "name": CLUSTER_NAME_CONFIG_MAP,
-                        "namespace": k8sNamespace,
+                        "namespace": k8s_namespace,
                     },
                 },
                 sort_keys=False,
                 indent=None,
             )
-        ))
+        )
 
         coreV1Api.create_namespaced_config_map(
-            k8sNamespace, configMapJson, pretty="pretty"
+            k8s_namespace, config_map_json, pretty="pretty"
         )
 
     except client.rest.ApiException as e:
         if e.status == 409:
-            logger.debug("ns/{} already exists... skipping!".format(k8sNamespace))
+            logger.debug("ns/{} already exists... skipping!".format(k8s_namespace))
     else:
-        logger.info("created ns/{}".format(k8sNamespace))
+        logger.info("created ns/{}".format(k8s_namespace))
         # copying imagepullsecrets to new NS took up to 13 seconds to apply
         sleep(20)
     try:
-        createResource(k8sKind, k8sNamespace, k8sMessage)
+        create_resource(k8s_kind, k8s_namespace, k8s_message)
     except client.rest.ApiException as e:
         if e.status == 409:
-            replaceResource(
-                k8sName, k8sKind, k8sNamespace, k8sMessage, k8sPvName, k8sPvcName
+            replace_resource(
+                k8s_name, k8s_kind, k8s_namespace, k8s_message, k8s_pv_name, k8s_pvc_name
             )
         else:
             logger.error(
-                f"applying {k8sKind}/{k8sName} in ns/{k8sNamespace} failed! Error code: {e.status}, Reason: {e.reason}."
+                f"applying {k8s_kind}/{k8s_name} in ns/{k8s_namespace} failed! Error code: {e.status}, Reason: {e.reason}."
             )
             logger.error(f"Headers: {e.headers}.")
             logger.error(f"Body: {e.body}.")
     else:
-        logger.info("created {}/{} in ns/{}".format(k8sKind, k8sName, k8sNamespace))
+        logger.info("created {}/{} in ns/{}".format(k8s_kind, k8s_name, k8s_namespace))
 
 
-def createResource(k8sKind, k8sNamespace, k8sMessage):
+def create_resource(k8s_kind, k8s_namespace, k8s_message):
     # initial create resource
-    if k8sKind == "deployment":
+    if k8s_kind == "deployment":
         appsV1Api.create_namespaced_deployment(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "service":
-        coreV1Api.create_namespaced_service(k8sNamespace, k8sMessage, pretty="pretty")
-    elif k8sKind == "ingress":
+    elif k8s_kind == "service":
+        coreV1Api.create_namespaced_service(k8s_namespace, k8s_message, pretty="pretty")
+    elif k8s_kind == "ingress":
         extensionsV1beta1Api.create_namespaced_ingress(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "cronjob":
+    elif k8s_kind == "cronjob":
         batchV1beta1Api.create_namespaced_cron_job(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "job":
-        batchV1Api.create_namespaced_job(k8sNamespace, k8sMessage, pretty="pretty")
-    elif k8sKind == "persistentvolume":
-        coreV1Api.create_persistent_volume(k8sMessage, pretty="pretty")
-    elif k8sKind == "persistentvolumeclaim":
+    elif k8s_kind == "job":
+        batchV1Api.create_namespaced_job(k8s_namespace, k8s_message, pretty="pretty")
+    elif k8s_kind == "persistentvolume":
+        coreV1Api.create_persistent_volume(k8s_message, pretty="pretty")
+    elif k8s_kind == "persistentvolumeclaim":
         coreV1Api.create_namespaced_persistent_volume_claim(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "role":
+    elif k8s_kind == "role":
         rbacAuthorizationV1Api.create_namespaced_role(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "rolebinding":
+    elif k8s_kind == "rolebinding":
         rbacAuthorizationV1Api.create_namespaced_role_binding(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "serviceaccount":
+    elif k8s_kind == "serviceaccount":
         coreV1Api.create_namespaced_service_account(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind in ("secret", "certificatedelivery"):
-        coreV1Api.create_namespaced_secret(k8sNamespace, k8sMessage, pretty="pretty")
-    elif k8sKind == "configmap":
+    elif k8s_kind in ("secret", "certificatedelivery"):
+        coreV1Api.create_namespaced_secret(k8s_namespace, k8s_message, pretty="pretty")
+    elif k8s_kind == "configmap":
         coreV1Api.create_namespaced_config_map(
-            k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "ingressrouteudp":
-        apiGroupVersion = k8sMessage["apiVersion"]
-        apiGroup = apiGroupVersion.split("/")[0]
-        apiVersion = apiGroupVersion.split("/")[1]
-        plurals = f"{k8sKind.lower()}s"
+    elif k8s_kind == "ingressrouteudp":
+        api_group_version = k8s_message["api_version"]
+        api_group = api_group_version.split("/")[0]
+        api_version = api_group_version.split("/")[1]
+        plurals = f"{k8s_kind.lower()}s"
         logger.info(
-            f"creating ingressrouteudp with apiGroup={apiGroup}, apiVersion={apiVersion}, k8sNamespace={k8sNamespace}, plurals={plurals}"
+            f"creating ingressrouteudp with api_group={api_group}, api_version={api_version}, k8sNamespace={k8s_namespace}, plurals={plurals}"
         )
         customV1Api.create_namespaced_custom_object(
-            apiGroup, apiVersion, k8sNamespace, plurals, k8sMessage, pretty="pretty"
+            api_group, api_version, k8s_namespace, plurals, k8s_message, pretty="pretty"
         )
     else:
-        logger.error(f"Unsupported resource type {k8sKind}")
+        logger.error(f"Unsupported resource type {k8s_kind}")
 
 
-def replaceResource(k8sName, k8sKind, k8sNamespace, k8sMessage, k8sPvName, k8sPvcName):
+def replace_resource(k8s_name, k8s_kind, k8s_namespace, k8s_message, k8s_pv_name, k8s_pvc_name):
     # If resource already exists
     logger.info(
         "{}/{} in ns/{} already exists... replacing".format(
-            k8sKind, k8sName, k8sNamespace
+            k8s_kind, k8s_name, k8s_namespace
         )
     )
-    if k8sKind == "deployment":
+    if k8s_kind == "deployment":
         appsV1Api.replace_namespaced_deployment(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "service":
-        conditionallyReplaceNamespacedService(k8sName, k8sNamespace, k8sMessage)
-    elif k8sKind == "ingress":
+    elif k8s_kind == "service":
+        conditionally_replace_namespaced_service(k8s_name, k8s_namespace, k8s_message)
+    elif k8s_kind == "ingress":
         extensionsV1beta1Api.replace_namespaced_ingress(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "cronjob":
+    elif k8s_kind == "cronjob":
         batchV1beta1Api.replace_namespaced_cron_job(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "job":
+    elif k8s_kind == "job":
         logger.info(
-            "deleting existing {}/{} in ns/{}...".format(k8sKind, k8sName, k8sNamespace)
+            "deleting existing {}/{} in ns/{}...".format(k8s_kind, k8s_name, k8s_namespace)
         )
-        batchV1Api.delete_namespaced_job(k8sName, k8sNamespace, pretty="pretty")
+        batchV1Api.delete_namespaced_job(k8s_name, k8s_namespace, pretty="pretty")
         sleep(10)
         logger.info(
-            "recreating {}/{} in ns/{}...".format(k8sKind, k8sName, k8sNamespace)
+            "recreating {}/{} in ns/{}...".format(k8s_kind, k8s_name, k8s_namespace)
         )
-        batchV1Api.create_namespaced_job(k8sNamespace, k8sMessage, pretty="pretty")
-    elif k8sKind == "persistentvolumeclaim":
+        batchV1Api.create_namespaced_job(k8s_namespace, k8s_message, pretty="pretty")
+    elif k8s_kind == "persistentvolumeclaim":
         coreV1Api.patch_namespaced_persistent_volume_claim(
-            k8sPvcName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_pvc_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "persistentvolume":
-        coreV1Api.patch_persistent_volume(k8sPvName, k8sMessage, pretty="pretty")
-    elif k8sKind == "role":
+    elif k8s_kind == "persistentvolume":
+        coreV1Api.patch_persistent_volume(k8s_pv_name, k8s_message, pretty="pretty")
+    elif k8s_kind == "role":
         rbacAuthorizationV1Api.replace_namespaced_role(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "rolebinding":
+    elif k8s_kind == "rolebinding":
         rbacAuthorizationV1Api.replace_namespaced_role_binding(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "serviceaccount":
+    elif k8s_kind == "serviceaccount":
         coreV1Api.replace_namespaced_service_account(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind in ("secret", "certificatedelivery"):
+    elif k8s_kind in ("secret", "certificatedelivery"):
         coreV1Api.replace_namespaced_secret(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "configmap":
+    elif k8s_kind == "configmap":
         coreV1Api.replace_namespaced_config_map(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
         )
-    elif k8sKind == "ingressrouteudp":
-        apiGroupVersion = k8sMessage["apiVersion"]
-        apiGroup = apiGroupVersion.split("/")[0]
-        apiVersion = apiGroupVersion.split("/")[1]
-        plurals = f"{k8sKind.lower()}s"
+    elif k8s_kind == "ingressrouteudp":
+        api_group_version = k8s_message["api_version"]
+        api_group = api_group_version.split("/")[0]
+        api_version = api_group_version.split("/")[1]
+        plurals = f"{k8s_kind.lower()}s"
         logger.info(
-            f"replacing ingressrouteudp with apiGroup={apiGroup}, apiVersion={apiVersion}, k8sNamespace={k8sNamespace}, plurals={plurals}"
+            f"replacing ingressrouteudp with api_group={api_group}, api_version={api_version}, k8sNamespace={k8s_namespace}, plurals={plurals}"
         )
-        try:
-            logger.info(
-                "patching {}/{} in ns/{}...".format(k8sKind, k8sName, k8sNamespace)
-            )
-            customV1Api.patch_namespaced_custom_object(
-                apiGroup, apiVersion, k8sNamespace, plurals, k8sName, k8sMessage
-            )
-        except client.rest.ApiException as e:
-            logger.info(
-                "patch failed. replacing {}/{} in ns/{}...".format(
-                    k8sKind, k8sName, k8sNamespace
-                )
-            )
-            customV1Api.replace_namespaced_custom_object(
-                apiGroup, apiVersion, k8sNamespace, plurals, k8sName, k8sMessage
-            )
+        ingressrouteudp_nested(api_group, api_version, k8s_kind, k8s_message, k8s_name, k8s_namespace, plurals)
     else:
-        logger.error(f"Unsupported resource type {k8sKind}")
+        logger.error(f"Unsupported resource type {k8s_kind}")
 
 
-def conditionallyReplaceNamespacedService(k8sName, k8sNamespace, k8sMessage):
-    if "resourceVersion" in k8sMessage and not k8sMessage["resourceVersion"]:
-        k8sMessage.pop("resourceVersion")
-        coreV1Api.replace_namespaced_service(
-            k8sName, k8sNamespace, k8sMessage, pretty="pretty"
+def ingressrouteudp_nested(api_group, api_version, k8s_kind, k8s_message, k8s_name, k8s_namespace, plurals):
+    try:
+        logger.info(
+            "patching {}/{} in ns/{}...".format(k8s_kind, k8s_name, k8s_namespace)
+        )
+        customV1Api.patch_namespaced_custom_object(
+            api_group, api_version, k8s_namespace, plurals, k8s_name, k8s_message
+        )
+    except client.rest.ApiException as e:
+        logger.info(
+            "patch failed. replacing {}/{} in ns/{}...".format(
+                k8s_kind, k8s_name, k8s_namespace
+            )
+        )
+        logger.exception(
+            f"exception details '{e}'"
+        )
+        customV1Api.replace_namespaced_custom_object(
+            api_group, api_version, k8s_namespace, plurals, k8s_name, k8s_message
         )
 
 
-def triggerOpenTest(k8sName):
+def conditionally_replace_namespaced_service(k8s_name, k8s_namespace, k8s_message):
+    if "resourceVersion" in k8s_message and not k8s_message["resourceVersion"]:
+        k8s_message.pop("resourceVersion")
+        coreV1Api.replace_namespaced_service(
+            k8s_name, k8s_namespace, k8s_message, pretty="pretty"
+        )
+
+
+def trigger_open_test(k8s_name):
     logger.info("Triggering OpenTest integration test")
     try:
-        openTestCronJob = batchV1beta1Api.read_namespaced_cron_job(
+        open_test_cron_job = batchV1beta1Api.read_namespaced_cron_job(
             "qe-opentest-integration", "qe"
         )
-        openTestJobSpec = openTestCronJob.spec.job_template.spec
-        openTestJobSpec.template.spec.containers[1].env.append(
-            client.V1EnvVar(name="DEPLOYMENT_NAME", value=k8sName)
+        open_test_job_spec = open_test_cron_job.spec.job_template.spec
+        open_test_job_spec.template.spec.containers[1].env.append(
+            client.V1EnvVar(name="DEPLOYMENT_NAME", value=k8s_name)
         )
         # max length is 63 chars
-        jobName = f"opentest-{k8sName}-{uuid4().hex[0:16]}"[0:63]
+        job_name = f"opentest-{k8s_name}-{uuid4().hex[0:16]}"[0:63]
 
-        newOpenTestJob = client.V1Job(
+        new_open_test_job = client.V1Job(
             api_version="batch/v1",
             kind="Job",
-            metadata=client.models.V1ObjectMeta(name=jobName),
-            spec=openTestJobSpec,
+            metadata=client.models.V1ObjectMeta(name=job_name),
+            spec=open_test_job_spec,
         )
 
-        batchV1Api.create_namespaced_job("qe", newOpenTestJob, pretty="pretty")
+        batchV1Api.create_namespaced_job("qe", new_open_test_job, pretty="pretty")
         logger.info("OpenTest integration test successfully launched")
     except client.rest.ApiException as e:
         if e.status == 404:
@@ -494,31 +520,31 @@ def triggerOpenTest(k8sName):
             )
 
 
-def deleteSQSMessage(sqsQueue, receiptHandle, messageId):
+def delete_sqs_message(sqs_queue, receipt_handle, message_id):
     # Delete received message from queue
-    logger.info(f"Deleting sqs message with id of {messageId}")
-    sqs.delete_message(QueueUrl=sqsQueue, ReceiptHandle=receiptHandle)
+    logger.info(f"Deleting sqs message with id of {message_id}")
+    sqs.delete_message(QueueUrl=sqs_queue, ReceiptHandle=receipt_handle)
 
 
-def waitForDeploymentToComplete(
-        k8sName, k8sNamespace, primaryResourceKind, timeout=300
+def wait_for_deployment_to_complete(
+        k8s_name, k8s_namespace, primary_resource_kind, timeout=300
 ):
     start = time.time()
-    logger.info(f"Waiting for deployment '{k8sName}' to succeed...")
-    logger.info(f"Resource kind is : {primaryResourceKind}")
+    logger.info(f"Waiting for deployment '{k8s_name}' to succeed...")
+    logger.info(f"Resource kind is : {primary_resource_kind}")
     while time.time() - start < timeout:
         sleep(2)
         try:
             # Wait for deployment only
-            if primaryResourceKind != "deployment":
+            if primary_resource_kind != "deployment":
                 return False
             deployment = appsV1Api.read_namespaced_deployment_status(
-                k8sName, k8sNamespace
+                k8s_name, k8s_namespace
             )
         except client.rest.ApiException as e:
             # Handles 404 or 401 or 400 error
             logger.error(
-                f"applying {k8sName} in ns/{k8sNamespace} failed! Error code: {e.status}, Reason: {e.reason}."
+                f"applying {k8s_name} in ns/{k8s_namespace} failed! Error code: {e.status}, Reason: {e.reason}."
             )
             logger.error(f"Headers: {e.headers}.")
             logger.error(f"Body: {e.body}.")
@@ -529,106 +555,106 @@ def waitForDeploymentToComplete(
                 and status.updated_replicas == deployment.spec.replicas
         ):
             # if ready_replicas and updated_replicas are equal to the deployment's expected replicas, success!
-            logger.info(f"Successfully deployed '{k8sName}'!")
+            logger.info(f"Successfully deployed '{k8s_name}'!")
             return deployment
         else:
-            elapsedSeconds = time.time() - start
+            elapsed_seconds = time.time() - start
             logger.info(
-                f"Updated replicas: {status.updated_replicas} of {deployment.spec.replicas}... ({int(elapsedSeconds)}/{timeout}s)"
+                f"Updated replicas: {status.updated_replicas} of {deployment.spec.replicas}... ({int(elapsed_seconds)}/{timeout}s)"
             )
 
     logger.error(f"Deployment did not complete after {timeout} seconds")
     return False
 
 
-def getComponentId(assetRestaurantId, assetsUrl, k8sName):
-    assetsUrlParams = {
-        "filter[name]": k8sName,
-        "filter[restaurant.id]": assetRestaurantId,
+def get_component_id(asset_restaurant_id, assets_url, k8s_name):
+    assets_url_params = {
+        "filter[name]": k8s_name,
+        "filter[restaurant.id]": asset_restaurant_id,
         "fields[components]": "id",
     }
-    assetsUrlResponse = requests.get(
-        f"{https_prefix}{assetsUrl}/restaurant_assets/components",
-        params=assetsUrlParams,
+    assets_url_response = requests.get(
+        f"{https_prefix}{assets_url}/restaurant_assets/components",
+        params=assets_url_params,
         auth=config["awsAuth"],
     )
-    assetsUrlResponseJson = secure_filename(json.loads(assetsUrlResponse.text))
-    componentId = assetsUrlResponseJson["data"][0]["id"]
+    assets_url_response_json = json.loads(assets_url_response.text)
+    component_id = assets_url_response_json["data"][0]["id"]
 
-    return componentId
+    return component_id
 
 
 # get deployment history id for the component
-def getDeploymentDetails(assetRestaurantId, assetsUrl, groupId):
-    historyParams = {
-        "filter[restaurant.id]": assetRestaurantId,
-        "filter[deployment_group.id]": groupId,
+def get_deployment_details(asset_restaurant_id, assets_url, group_id):
+    history_params = {
+        "filter[restaurant.id]": asset_restaurant_id,
+        "filter[deployment_group.id]": group_id,
     }
-    historyResponse = requests.get(
-        f"{https_prefix}{assetsUrl}/restaurant_assets/deployment_history",
-        params=historyParams,
+    history_response = requests.get(
+        f"{https_prefix}{assets_url}/restaurant_assets/deployment_history",
+        params=history_params,
         auth=config["awsAuth"],
     )
-    historyResponseJson = secure_filename(json.loads(historyResponse.text))
-    historyID = historyResponseJson["data"][0]["id"]
-    return historyID
+    history_response_json = json.loads(history_response.text)
+    history_id = history_response_json["data"][0]["id"]
+    return history_id
 
 
 # get deployment group id from the message metadata
-def getDeploymentGroupID(messages):
-    msgMetadata = secure_filename(json.loads(messages["metadata"]["StringValue"]))["metadata"]
+def get_deployment_group_id(messages):
+    msg_metadata = json.loads(messages["metadata"]["StringValue"])["metadata"]
 
-    if "deploymentGroupId" in msgMetadata:
-        deploymentID = msgMetadata["deploymentGroupId"]
+    if "deploymentGroupId" in msg_metadata:
+        deployment_id = msg_metadata["deploymentGroupId"]
     else:
-        deploymentID = "0"
+        deployment_id = "0"
     logger.info(
-        f"Deployment group id name from the deployment manifest is {deploymentID}"
+        f"Deployment group id name from the deployment manifest is {deployment_id}"
     )
-    return deploymentID
+    return deployment_id
 
 
-def updateAssetService(
-        componentName,
-        k8sName,
-        deploymentVersion,
-        assetsUrl,
-        assetRestaurantId,
-        hasMultipleComponents,
+def update_asset_service(
+        component_name,
+        k8s_name,
+        deployment_version,
+        assets_url,
+        asset_restaurant_id,
+        has_multiple_components,
 ):
-    if "restaurant-assets" in k8sName:
+    if "restaurant-assets" in k8s_name:
         # after we deploy asset svc, we need to let it restart before running queries
         sleep(60)
 
-    if hasMultipleComponents:
-        componentId = getComponentId(assetRestaurantId, assetsUrl, componentName)
+    if has_multiple_components:
+        component_id = get_component_id(asset_restaurant_id, assets_url, component_name)
     else:
-        componentId = getComponentId(assetRestaurantId, assetsUrl, k8sName)
+        component_id = get_component_id(asset_restaurant_id, assets_url, k8s_name)
 
     response = requests.get(
-        f"{https_prefix}{assetsUrl}/restaurant_assets/components/{componentId}",
+        f"{https_prefix}{assets_url}/restaurant_assets/components/{component_id}",
         auth=config["awsAuth"],
     )
 
     payload = {
         "data": {
             "type": "components",
-            "attributes": {"reportedVersion": deploymentVersion},
+            "attributes": {"reportedVersion": deployment_version},
         }
     }
-    headers = {"content-type": "application/vnd.api+json"}
+    headers = {"content-type": application_type}
 
     if response.status_code != 200:
         logger.error("API Endpoint is currently not responding")
     else:
         logger.info(
             "Attempting to patch component name "
-            + k8sName
+            + k8s_name
             + " with version: "
-            + deploymentVersion
+            + deployment_version
         )
         requests.patch(
-            f"{https_prefix}{assetsUrl}/restaurant_assets/components/{componentId}",
+            f"{https_prefix}{assets_url}/restaurant_assets/components/{component_id}",
             data=json.dumps(payload),
             headers=headers,
             auth=config["awsAuth"],
@@ -638,72 +664,72 @@ def updateAssetService(
 
 
 # code to update deployment history
-def updateDepoymentHistory(assetRestaurantId, assetsUrl, messages, status):
-    groupid = getDeploymentGroupID(messages)
+def update_deployment_history(asset_restaurant_id, assets_url, messages, status):
+    groupid = get_deployment_group_id(messages)
 
     if groupid == "0":
         logger.info("No need to update deployment history")
     else:
         # get deployment history details
-        historyID = getDeploymentDetails(assetRestaurantId, assetsUrl, groupid)
-        logger.info("Deployment history to be updated: " + historyID)
+        history_id = get_deployment_details(asset_restaurant_id, assets_url, groupid)
+        logger.info("Deployment history to be updated: " + history_id)
 
         payload = {
             "data": {"type": "deployment_history", "attributes": {"status": status}}
         }
-        headers = {"content-type": "application/vnd.api+json"}
+        headers = {"content-type": application_type}
 
-        apiResponse = requests.patch(
-            f"{https_prefix}{assetsUrl}/restaurant_assets/deployment_history/{historyID}",
+        api_response = requests.patch(
+            f"{https_prefix}{assets_url}/restaurant_assets/deployment_history/{history_id}",
             data=json.dumps(payload),
             headers=headers,
             auth=config["awsAuth"],
         )
         logger.info("Patching Deployment Status successful!")
 
-        if apiResponse.status_code == 200:
+        if api_response.status_code == 200:
             logger.error(
                 "Deployment status updated for deployment history id "
-                + historyID
+                + history_id
                 + " with status "
                 + status
             )
         else:
             logger.info(
-                "Deployment status updation failed for history id: " + historyID
+                "Deployment status updation failed for history id: " + history_id
             )
 
 
-def confirmCertificateDelivery(k8sName, assetsUrl, assetRestaurantId):
-    componentId = getComponentId(assetRestaurantId, assetsUrl, k8sName)
+def confirm_certificate_delivery(k8s_name, assets_url, asset_restaurant_id):
+    component_id = get_component_id(asset_restaurant_id, assets_url, k8s_name)
 
-    assetsUrlParams = {
+    assets_url_params = {
         "filter[propertyName]": "OnboardingStatus",
-        "filter[component.id]": componentId,
+        "filter[component.id]": component_id,
         "fields[component_props]": "id",
     }
-    propertyResponse = requests.get(
-        f"{https_prefix}{assetsUrl}/restaurant_assets/component_props",
-        params=assetsUrlParams,
+    property_response = requests.get(
+        f"{https_prefix}{assets_url}/restaurant_assets/component_props",
+        params=assets_url_params,
         auth=config["awsAuth"],
     )
-    propertyResponseJson = secure_filename(json.loads(propertyResponse.text))
-    propertyId = propertyResponseJson["data"][0]["id"]
+    property_response_json = json.loads(property_response.text)
+    property_id = property_response_json["data"][0]["id"]
 
     payload = {
         "data": {"type": "component_props", "attributes": {"propertyValue": "Success"}}
     }
-    headers = {"content-type": "application/vnd.api+json"}
+    headers = {"content-type": application_type}
 
-    if propertyResponse.status_code != 200:
+    if property_response.status_code != 200:
         logger.error("API Endpoint is currently not responding")
     else:
         logger.info(
             "Attempting to patch OnboardingStatus to Completed for component name "
-            + k8sName
+            + k8s_name
         )
         requests.patch(
-            f"{https_prefix}{assetsUrl}/restaurant_assets/component_props/{propertyId}",
+            f"{https_prefix}{assets_url}/restaurant_assets/component_props/{property_id}",
             data=json.dumps(payload),
             headers=headers,
             auth=config["awsAuth"],
@@ -711,15 +737,15 @@ def confirmCertificateDelivery(k8sName, assetsUrl, assetRestaurantId):
         logger.info("Patching Assets API successful!")
 
 
-def getTemporaryCredentials(accessKey, secretKey, iotRoleARN):
+def get_temporary_credentials(access_key, secret_key, iot_role_arn):
     session = boto3.Session(
-        aws_access_key_id=accessKey,
-        aws_secret_access_key=secretKey,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
     )
     sts_client = session.client('sts')
 
     assumed_role_object = sts_client.assume_role(
-        RoleArn=iotRoleARN,
+        RoleArn=iot_role_arn,
         RoleSessionName="AssumeRoleSession1"
     )
 
@@ -729,290 +755,338 @@ def getTemporaryCredentials(accessKey, secretKey, iotRoleARN):
 
 def configure():
     if "restaurant_id" in os.environ:
-        restaurantId = str(os.getenv("restaurant_id"))
-        logger.info(f"Restaurant id: {restaurantId}")
+        restaurant_id = str(os.getenv("restaurant_id"))
+        logger.info(f"Restaurant id: {restaurant_id}")
     else:
         logger.error("'restaurant_id' env variable does not exist")
         sys.exit(1)
 
     # Setting up Env variable for AwsAccount , Region
-    awsRegion = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+    aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 
-    awsAccount = os.getenv("AWS_ACCOUNT", "283388140277")
-    awsAccessKey = os.getenv("AWS_ACCESS_KEY_ID")
-    awsSecretKey = os.getenv("AWS_SECRET_ACCESS_KEY")
+    aws_account = os.getenv("AWS_ACCOUNT", "283388140277")
+    aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 
-    queueBaseUrl = f"https://sqs.{awsRegion}.amazonaws.com/{awsAccount}/"
-    logger.info(f"Base SQS Queue URL: {queueBaseUrl}")
-    queueSuffix = "-SQS-DEPLOYMENT.fifo"
+    queue_base_url = f"https://sqs.{aws_region}.amazonaws.com/{aws_account}/"
+    logger.info(f"Base SQS Queue URL: {queue_base_url}")
+    queue_suffix = "-SQS-DEPLOYMENT.fifo"
 
-    queuePrefix, assetsUrl, iotGetCertificateUrl, iotRoleARN = getQueuePrefixAndAssetsUrl(awsAccount)
+    queue_prefix, assets_url, iot_get_certificate_url, iot_role_arn = get_queue_prefix_and_assets_url(aws_account)
 
-    awsAuth = BotoAWSRequestsAuth(
-        aws_host=assetsUrl, aws_region=awsRegion, aws_service="execute-api"
+    aws_auth = BotoAWSRequestsAuth(
+        aws_host=assets_url, aws_region=aws_region, aws_service="execute-api"
     )
-    credentials = getTemporaryCredentials(awsAccessKey, awsSecretKey, iotRoleARN)
+    credentials = get_temporary_credentials(aws_access_key, aws_secret_key, iot_role_arn)
 
-    awsAuthIoT = AWSRequestsAuth(credentials["AccessKeyId"], credentials["SecretAccessKey"],
-                                 iotGetCertificateUrl, 'us-east-1', 'execute-api',
-                                 credentials["SessionToken"])
+    aws_auth_iot = AWSRequestsAuth(credentials["AccessKeyId"], credentials["SecretAccessKey"],
+                                   iot_get_certificate_url, 'us-east-1', 'execute-api',
+                                   credentials["SessionToken"])
 
-    assetRestaurantIdResponse = requests.get(
-        f"https://{assetsUrl}/restaurant_assets/restaurants?filter[name]={restaurantId}",
-        auth=awsAuth,
+    asset_restaurant_id_response = requests.get(
+        f"https://{assets_url}/restaurant_assets/restaurants?filter[name]={restaurant_id}",
+        auth=aws_auth,
     )
 
-    assetsUrlResponseJson = secure_filename(json.loads(assetRestaurantIdResponse.text))
-    logger.info(f"Restaurant details : {assetsUrlResponseJson}")
+    assets_url_response_json = json.loads(asset_restaurant_id_response.text)
+    logger.info(f"Restaurant details : {assets_url_response_json}")
 
-    assetRestaurantId = assetsUrlResponseJson["data"][0]["id"]
+    asset_restaurant_id = assets_url_response_json["data"][0]["id"]
 
-    config["restaurantId"] = restaurantId
-    config["awsAccount"] = awsAccount
-    config["awsRegion"] = awsRegion
-    config["queueBaseUrl"] = queueBaseUrl
-    config["queueSuffix"] = queueSuffix
-    config["assetsUrl"] = assetsUrl
-    config["queuePrefix"] = queuePrefix
-    config["awsAuth"] = awsAuth
-    config["assetRestaurantId"] = assetRestaurantId
-    config["iotGetCertificateUrl"] = iotGetCertificateUrl
-    config["awsAuthIoT"] = awsAuthIoT
+    config["restaurantId"] = restaurant_id
+    config["awsAccount"] = aws_account
+    config["awsRegion"] = aws_region
+    config["queueBaseUrl"] = queue_base_url
+    config["queueSuffix"] = queue_suffix
+    config["assetsUrl"] = assets_url
+    config["queuePrefix"] = queue_prefix
+    config["awsAuth"] = aws_auth
+    config["assetRestaurantId"] = asset_restaurant_id
+    config["iotGetCertificateUrl"] = iot_get_certificate_url
+    config["awsAuthIoT"] = aws_auth_iot
 
 
-def loopThroughMessages(
-        messages, assetRestaurantId, assetsUrl, componentName, k8sName, k8sNamespace
+def loop_through_messages(
+        messages, asset_restaurant_id, assets_url, component_name, k8s_name, k8s_namespace
 ):
     # set to None by default so we can recognize cases where a SQS message does not change a primary resource
-    primaryResourceKind = None
-    k8sPvName = None
-    k8sPvcName = None
-    k8sImageVersion = None
-    previousDeployment = None
+    primary_resource_kind = None
+    k8s_pv_name = None
+    k8s_pvc_name = None
+    k8s_image_version = None
+    previous_deployment = None
     # svcs,svcs-restaurant-assets,svcs-restaurant-assets
-    for attributeName, attributeValue in messages.items():
-        k8sKind = attributeName.lower()
-        if isinstance(attributeValue["StringValue"], dict):
-            k8sMessage = attributeValue["StringValue"]
-        else:
-            k8sMessage = secure_filename(json.loads(attributeValue["StringValue"]))
-        k8sKind, k8sName, hasMultipleComponents = checkForMultipleComponents(
-            k8sKind, k8sMessage, k8sName
-        )
-        if k8sKind == "cronjob":
-            primaryResourceKind = k8sKind
-            k8sImageVersion = getImageVersionFromCronJob(k8sMessage)
-        elif k8sKind == "secret":
-            k8sName = k8sMessage["metadata"]["name"]
-            k8sNamespace = k8sName.split("-")[0]
-        elif k8sKind == "configmap":
-            k8sName = k8sMessage["metadata"]["name"]
-            k8sNamespace = k8sName.split("-")[0]
-        elif k8sKind == "certificate":
-            primaryResourceKind = k8sKind
-            tryPostingCertificateNotification(messages)
-        elif k8sKind == "certificatedelivery":
-            primaryResourceKind = k8sKind
-            k8sName = k8sMessage["metadata"]["name"]
-            k8sNamespace = k8sName.split("-")[0]
-        elif k8sKind == "firmware":
-            primaryResourceKind = k8sKind
-            logger.info(
-                "Firmware Notification has been triggered. Message contents are {}".format(
-                    k8sMessage
-                )
-            )
-            try:
-                # firmwareNotificationRequest = requests.post(
-                #     "http://iot-firmware-fetcher.iot.svc.cluster.local:8080/updateFirmwareVersion",
-                #     json=k8sMessage,
-                # )
-                firmwareNotificationRequest = requests.post(
-                    "http://thing-configurator.iot.svc.cluster.local:8088/update_firmware",
-                    json=k8sMessage,
-                )
-                firmwareNotificationRequest.raise_for_status()
-            except requests.exceptions.RequestException as err:
-                logger.error(
-                    "Unable to notify the Firmware Fetcher Service due to following error: "
-                )
-                logger.exception(err)
-        elif k8sKind == "persistentvolume":
-            k8sPv = k8sMessage
-            k8sPvName = k8sPv["metadata"]["name"]
-        elif k8sKind == "persistentvolumeclaim":
-            k8sPvc = k8sMessage
-            k8sPvcName = k8sPvc["metadata"]["name"]
-        elif k8sKind == "ingress":
-            primaryResourceKind = k8sKind
-        elif k8sKind == "deployment":
-            primaryResourceKind = k8sKind
-            k8sImageVersion = getImageVersionFromDeployment(k8sMessage)
-            #
-            logger.info(f"Found k8s image version : {k8sImageVersion}")
+    for attribute_name, attribute_value in messages.items():
+        k8s_kind = attribute_name.lower()
+        has_multiple_components, k8s_kind, k8s_message, k8s_name = loop_through_messages_1(attribute_value, k8s_kind,
+                                                                                           k8s_name)
+        if k8s_kind == "cronjob":
+            primary_resource_kind = k8s_kind
+            k8s_image_version = get_image_version_from_cron_job(k8s_message)
+        elif k8s_kind == "secret" or k8s_kind == "configmap":
+            k8s_name = k8s_message["metadata"]["name"]
+            k8s_namespace = k8s_name.split("-")[0]
+        elif k8s_kind == "certificate":
+            primary_resource_kind = k8s_kind
+            try_posting_certificate_notification(messages)
+        elif k8s_kind == "certificatedelivery":
+            primary_resource_kind = k8s_kind
+            k8s_name = k8s_message["metadata"]["name"]
+            k8s_namespace = k8s_name.split("-")[0]
+        elif k8s_kind == "firmware":
+            primary_resource_kind = loop_through_messages_2(k8s_kind, k8s_message)
+        elif k8s_kind == "persistentvolume":
+            k8s_pv = k8s_message
+            k8s_pv_name = k8s_pv["metadata"]["name"]
+        elif k8s_kind == "persistentvolumeclaim":
+            k8s_pvc = k8s_message
+            k8s_pvc_name = k8s_pvc["metadata"]["name"]
+        elif k8s_kind == "ingress":
+            primary_resource_kind = k8s_kind
+        elif k8s_kind == "deployment":
+            k8s_image_version, previous_deployment, primary_resource_kind = loop_through_messages_3(k8s_kind,
+                                                                                                    k8s_message, k8s_name,
+                                                                                                    k8s_namespace)
 
-            # save current deployment before applying new one, so we can easily roll-back to it if needed
-            try:
-                previousDeployment = appsV1Api.read_namespaced_deployment(
-                    k8sName, k8sNamespace, export=True
-                )
-            except:
-                previousDeployment = None
-                logger.info(
-                    f"Did not find existing deployment with name '{k8sName}': has not been deployed before"
-                )
-
-        elif k8sKind == "job":
-            primaryResourceKind = k8sKind
-            k8sImageVersion = getImageVersionFromJob(k8sMessage)
+        elif k8s_kind == "job":
+            primary_resource_kind = k8s_kind
+            k8s_image_version = get_image_version_from_job(k8s_message)
 
         # BTP-231:
         # this k8s kind "onboarddevice" deals with onboarding/action of iot(eg: greengrass) or non-iot(eg: axis cam) devices
         # takes onboarding payload from onboarding lambda through SQS queue and passes them to iot-thing-configurator
-        elif k8sKind == "onboarddevice":
-            primaryResourceKind = k8sKind
-            itcEndpoint = "http://thing-configurator.iot.svc.cluster.local:8088/configurator_action"  # iot thing configurator endpoint
-            # itcEndpoint = "http://iot-thing-configurator.iot.svc.cluster.local:8088/configurator_action"  # iot thing configurator endpoint
-            logger.info(
-                "Preparing to trigger iot-thing-configurator, Request payload= {}, Endpoint= {}".format(k8sMessage,
-                                                                                                        itcEndpoint)
-            )
-            try:
-                itcResponse = requests.post(
-                    itcEndpoint,
-                    json=k8sMessage,  # K8s message containing onboarding/action payload
-                )
+        elif k8s_kind == "onboarddevice":
+            primary_resource_kind = loop_through_messages_4(assets_url, k8s_kind, k8s_message)
 
-                logger.info(
-                    "iot-thing-configurator triggered, Response code = {}, Response = {}".format(
-                        itcResponse.status_code,
-                        itcResponse)
-                )
-
-            except requests.exceptions.RequestException as err:
-                logger.error(
-                    "Unable to trigger iot-thing-configurator: "
-                )
-                logger.exception(err)
-
-        if k8sKind not in ["metadata", "certificate", "firmware", "onboarddevice"]:
-            applyk8sMessage(
-                k8sName,
-                k8sKind,
-                k8sNamespace,
-                k8sMessage,
-                k8sPvName,
-                k8sPvcName,
-                assetRestaurantId,
+        if k8s_kind not in ["metadata", "certificate", "firmware", "onboarddevice"]:
+            applyk8s_message(
+                k8s_name,
+                k8s_kind,
+                k8s_namespace,
+                k8s_message,
+                k8s_pv_name,
+                k8s_pvc_name,
+                asset_restaurant_id,
             )
 
-        processPrimaryResourceKind(
-            primaryResourceKind,
-            hasMultipleComponents,
-            componentName,
-            k8sName,
-            k8sNamespace,
-            k8sImageVersion,
-            assetsUrl,
-            assetRestaurantId,
-            previousDeployment,
-            k8sPvName,
-            k8sPvcName,
+        process_primary_resource_kind(
+            primary_resource_kind,
+            has_multiple_components,
+            component_name,
+            k8s_name,
+            k8s_namespace,
+            k8s_image_version,
+            assets_url,
+            asset_restaurant_id,
+            previous_deployment,
+            k8s_pv_name,
+            k8s_pvc_name,
             messages,
         )
-    return primaryResourceKind
+    return primary_resource_kind
+
+def loop_through_messages_4(assets_url, k8s_kind, k8s_message):
+    component_id = k8s_message['deviceDetailsList'][0]['componentId']
+    logger.info(
+        "Component Id of the device to be onboarded = {}".format(component_id)
+    )
+    payload = {
+        "data": {
+            "type": "component_audit_history",
+            "attributes": {
+                "srcOfAction": "EDS",
+                "action": "Message received on Edge",
+                "description": "EDS received the message from the restaurant queue"
+            },
+            "relationships": {
+                "component": {
+                    "data": {
+                        "type": "components",
+                        "id": component_id
+                    }
+                }
+            }
+        }
+    }
+    headers = {"content-type": application_type}
+    audit_history_response = requests.post(
+        f"{https_prefix}{assets_url}/restaurant_assets/component_audit_history",
+        data=json.dumps(payload),
+        headers=headers,
+        auth=config["awsAuth"],
+    )
+    logger.info(
+        "Added record to component audit history table. Response = {}".format(audit_history_response.status_code)
+    )
+    primary_resource_kind = k8s_kind
+    itc_endpoint = "http://iot-thing-configurator.iot.svc.cluster.local:8088/configurator_action"  # iot-thing-configurator endpoint
+    logger.info(
+        "Preparing to trigger iot-thing-configurator, Request payload= {}, Endpoint= {}".format(k8s_message,
+                                                                                                itc_endpoint)
+    )
+    try:
+        itc_response = requests.post(
+            itc_endpoint,
+            json=k8s_message,  # K8s message containing onboarding/action payload
+        )
+
+        logger.info(
+            "iot-thing-configurator triggered, Response code = {}, Response = {}".format(
+                itc_response.status_code,
+                itc_response)
+        )
+
+    except requests.exceptions.RequestException as err:
+        logger.error(
+            "Unable to trigger iot-thing-configurator: "
+        )
+        logger.exception(err)
+    return primary_resource_kind
 
 
-def checkForMultipleComponents(k8sKind, k8sMessage, k8sName):
-    hasMultipleComponents = False
-    if k8sKind.find("|") != -1:
-        k8sKind = k8sKind.split("|")[0]
-        hasMultipleComponents = True
-        logger.info("parsed k8sKind {}.".format(k8sKind))
+def loop_through_messages_3(k8s_kind, k8s_message, k8s_name, k8s_namespace):
+    primary_resource_kind = k8s_kind
+    k8s_image_version = get_image_version_from_deployment(k8s_message)
+    #
+    logger.info(f"Found k8s image version : {k8s_image_version}")
+    # save current deployment before applying new one, so we can easily roll-back to it if needed
+    try:
+        previous_deployment = appsV1Api.read_namespaced_deployment(
+            k8s_name, k8s_namespace, export=True
+        )
+    except (ValueError, Exception):
+        previous_deployment = None
+        logger.error(
+            f"Did not find existing deployment with name '{k8s_name}': has not been deployed before"
+        )
+    return k8s_image_version, previous_deployment, primary_resource_kind
+
+
+def loop_through_messages_2(k8s_kind, k8s_message):
+    primary_resource_kind = k8s_kind
+    logger.info(
+        "Firmware Notification has been triggered. Message contents are {}".format(
+            k8s_message
+        )
+    )
+    try:
+        firmware_notification_request = requests.post(
+            "http://iot-thing-configurator.iot.svc.cluster.local:8088/update_firmware",
+            json=k8s_message,
+        )
+        firmware_notification_request.raise_for_status()
+    except requests.exceptions.RequestException as err:
+        logger.error(
+            "Unable to notify the Firmware Fetcher Service due to following error: "
+        )
+        logger.exception(err)
+    return primary_resource_kind
+
+
+def loop_through_messages_1(attribute_value, k8s_kind, k8s_name):
+    if isinstance(attribute_value["StringValue"], dict):
+        k8s_message = attribute_value["StringValue"]
+    else:
+        k8s_message = json.loads(attribute_value["StringValue"])
+    k8s_kind, k8s_name, has_multiple_components = check_for_multiple_components(
+        k8s_kind, k8s_message, k8s_name
+    )
+    return has_multiple_components, k8s_kind, k8s_message, k8s_name
+
+
+def check_for_multiple_components(k8s_kind, k8s_message, k8s_name):
+    has_multiple_components = False
+    if k8s_kind.find("|") != -1:
+        k8s_kind = k8s_kind.split("|")[0]
+        has_multiple_components = True
+        logger.info("parsed k8sKind {}.".format(k8s_kind))
 
         try:
-            if "metadata" in k8sMessage and "name" in k8sMessage["metadata"]:
-                k8sName = k8sMessage["metadata"]["name"]
-                logger.info(f"Name retrieved from the deployment manifest is {k8sName}")
+            if "metadata" in k8s_message and "name" in k8s_message["metadata"]:
+                k8s_name = k8s_message["metadata"]["name"]
+                logger.info(f"Name retrieved from the deployment manifest is {k8s_name}")
             else:
                 logger.info("Message has no metadata")
         except KeyError as e:
             logger.info("Message does not have metadata name")
-    return k8sKind, k8sName, hasMultipleComponents
+            logger.exception(
+                f"exception details '{e}'"
+            )
+    return k8s_kind, k8s_name, has_multiple_components
 
 
-def processPrimaryResourceKind(
-        primaryResourceKind,
-        hasMultipleComponents,
-        componentName,
-        k8sName,
-        k8sNamespace,
-        k8sImageVersion,
-        assetsUrl,
-        assetRestaurantId,
-        previousDeployment,
-        k8sPvName,
-        k8sPvcName,
+def process_primary_resource_kind(
+        primary_resource_kind,
+        has_multiple_components,
+        component_name,
+        k8s_name,
+        k8s_namespace,
+        k8s_image_version,
+        assets_url,
+        asset_restaurant_id,
+        previous_deployment,
+        k8s_pv_name,
+        k8s_pvc_name,
         messages,
 ):
-    if primaryResourceKind == "deployment":
+    if primary_resource_kind == "deployment":
 
-        if hasMultipleComponents == "False":
+        if has_multiple_components == "False":
             logger.info(
                 f"Deployment has single component, setting k8sName to componentName"
             )
-            k8sName = componentName
+            k8s_name = component_name
         else:
             logger.info(
                 f"Deployment has multiple components, proceeding to deploying each component individually"
             )
 
-        if waitForDeploymentToComplete(k8sName, k8sNamespace, primaryResourceKind):
-            updateAssetService(
-                componentName,
-                k8sName,
-                k8sImageVersion,
-                assetsUrl,
-                assetRestaurantId,
-                hasMultipleComponents,
+        if wait_for_deployment_to_complete(k8s_name, k8s_namespace, primary_resource_kind):
+            update_asset_service(
+                component_name,
+                k8s_name,
+                k8s_image_version,
+                assets_url,
+                asset_restaurant_id,
+                has_multiple_components,
             )
             # update deploymenthistory for component with Completed status
-            updateDepoymentHistory(assetRestaurantId, assetsUrl, messages, "Completed")
-            triggerOpenTest(componentName)
+            update_deployment_history(asset_restaurant_id, assets_url, messages, "Completed")
+            trigger_open_test(component_name)
         else:
             logger.error(
-                f"Deployment for '{k8sName}' with version '{k8sImageVersion}' was unsuccessful!"
+                f"Deployment for '{k8s_name}' with version '{k8s_image_version}' was unsuccessful!"
             )
             # update deployment history with failed status
-            updateDepoymentHistory(assetRestaurantId, assetsUrl, messages, "Failed")
-            checkForPreviousDeployment(
-                k8sName,
-                primaryResourceKind,
-                k8sNamespace,
-                previousDeployment,
-                k8sPvName,
-                k8sPvcName,
-                assetRestaurantId,
+            update_deployment_history(asset_restaurant_id, assets_url, messages, "Failed")
+            check_for_previous_deployment(
+                k8s_name,
+                primary_resource_kind,
+                k8s_namespace,
+                previous_deployment,
+                k8s_pv_name,
+                k8s_pvc_name,
+                asset_restaurant_id,
             )
-    elif primaryResourceKind in ["job", "cronjob"]:
-        updateAssetService(
-            componentName,
-            k8sName,
-            k8sImageVersion,
-            assetsUrl,
-            assetRestaurantId,
-            hasMultipleComponents,
+    elif primary_resource_kind in ["job", "cronjob"]:
+        update_asset_service(
+            component_name,
+            k8s_name,
+            k8s_image_version,
+            assets_url,
+            asset_restaurant_id,
+            has_multiple_components,
         )
         # update deploymenthistory for component with Completed status
-        updateDepoymentHistory(assetRestaurantId, assetsUrl, messages, "Completed")
-    elif primaryResourceKind == "certificatedelivery":
-        confirmCertificateDelivery(componentName, assetsUrl, assetRestaurantId)
+        update_deployment_history(asset_restaurant_id, assets_url, messages, "Completed")
+    elif primary_resource_kind == "certificatedelivery":
+        confirm_certificate_delivery(component_name, assets_url, asset_restaurant_id)
 
 
 def main():
     configure()
     try:
-        getSQSMessage()
+        get_sqs_message()
     except NameError:
         print("Exception error")
 
