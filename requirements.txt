@@ -8,3 +8,4 @@ mock==4.0.2
 coverage
 pytest-cov
 aws_requests_auth
+urllib3==1.26.5
