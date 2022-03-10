@@ -37,14 +37,15 @@ application_type = "application/vnd.api+json"
 
 config = {}
 
-req_url = requests.get(
-    f"https://{config['assetsUrl']}/restaurant_assets/restaurants?filter[name]={config['restaurantId']}",
-    auth=config["awsAuth"])
+
 
 def get_sqs_message():
-    asset_restaurant_id_response = req_url
-    asset_restaurant_id_response_json = json.loads(asset_restaurant_id_response.text)
-    asset_restaurant_id = asset_restaurant_id_response_json["data"][0]["id"]
+    # asset_restaurant_id_response = req_url
+    asset_restaurant_id_response = json.loads(requests.get(
+        f"https://{config['assetsUrl']}/restaurant_assets/restaurants?filter[name]={config['restaurantId']}",
+        auth=config["awsAuth"]))
+    # asset_restaurant_id_response = json.loads(asset_restaurant_id_response.text)
+    asset_restaurant_id = asset_restaurant_id_response["data"][0]["id"]
 
     queue_url = f"{config['queueBaseUrl']}{config['queuePrefix']}{asset_restaurant_id}{config['queueSuffix']}"
     logger.info(f"queue_url: {queue_url}")
@@ -127,11 +128,14 @@ def get_message_data_from_response(response):
         receipt_handle = message["ReceiptHandle"]
         # try to get the payload in the message body, if not, use message attributes.
         if is_valid_json(message["Body"]):
-            message_payload = message["Body"]
-            messages = json.load(StringIO(message_payload))
+           # message_payload = message["Body"]
+           # messages = json.load(StringIO(message_payload))
+            messages = json.load(StringIO(message["Body"]))
+            
         else:
-            message_payload = message["MessageAttributes"]
-            messages = json.loads(json.dumps(message_payload))
+           # message_payload = message["MessageAttributes"]
+           # messages = json.loads(json.dumps(message_payload))
+            messages = json.loads(json.dumps(message["MessageAttributes"]))
     except KeyError:
         logger.info("No messages in queue")
         exit(0)
@@ -573,12 +577,18 @@ def get_component_id(asset_restaurant_id, assets_url, k8s_name):
         "filter[restaurant.id]": asset_restaurant_id,
         "fields[components]": "id",
     }
-    assets_url_response = requests.get(
+    
+    # assets_url_response = requests.get(
+    #   f"{https_prefix}{assets_url}/restaurant_assets/components",
+    #    params=assets_url_params,
+    #    auth=config["awsAuth"],
+    #)
+    assets_url_response_json = json.loads(requests.get(
         f"{https_prefix}{assets_url}/restaurant_assets/components",
         params=assets_url_params,
         auth=config["awsAuth"],
-    )
-    assets_url_response_json = json.loads(assets_url_response.text)
+    ))
+    # assets_url_response_json = json.loads(assets_url_response.text)
     component_id = assets_url_response_json["data"][0]["id"]
 
     return component_id
@@ -590,12 +600,17 @@ def get_deployment_details(asset_restaurant_id, assets_url, group_id):
         "filter[restaurant.id]": asset_restaurant_id,
         "filter[deployment_group.id]": group_id,
     }
-    history_response = requests.get(
+    history_response_json = json.loads(requests.get(
         f"{https_prefix}{assets_url}/restaurant_assets/deployment_history",
         params=history_params,
         auth=config["awsAuth"],
-    )
-    history_response_json = json.loads(history_response.text)
+    ))
+    # history_response = requests.get(
+    #    f"{https_prefix}{assets_url}/restaurant_assets/deployment_history",
+    #    params=history_params,
+    #    auth=config["awsAuth"],
+    #)
+    # history_response_json = json.loads(history_response.text)
     history_id = history_response_json["data"][0]["id"]
     return history_id
 
@@ -708,12 +723,17 @@ def confirm_certificate_delivery(k8s_name, assets_url, asset_restaurant_id):
         "filter[component.id]": component_id,
         "fields[component_props]": "id",
     }
-    property_response = requests.get(
+    property_response_json = json.loads(requests.get(
         f"{https_prefix}{assets_url}/restaurant_assets/component_props",
         params=assets_url_params,
         auth=config["awsAuth"],
-    )
-    property_response_json = json.loads(property_response.text)
+    ))
+    # property_response = requests.get(
+    #    f"{https_prefix}{assets_url}/restaurant_assets/component_props",
+    #    params=assets_url_params,
+    #   auth=config["awsAuth"],
+    #)
+    # property_response_json = json.loads(property_response.text)
     property_id = property_response_json["data"][0]["id"]
 
     payload = {
@@ -782,15 +802,18 @@ def configure():
     aws_auth_iot = AWSRequestsAuth(credentials["AccessKeyId"], credentials["SecretAccessKey"],
                                    iot_get_certificate_url, 'us-east-1', 'execute-api',
                                    credentials["SessionToken"])
-
-    asset_restaurant_id_response = requests.get(
+    assets_url_response_json = json.loads( requests.get(
         f"https://{assets_url}/restaurant_assets/restaurants?filter[name]={restaurant_id}",
         auth=aws_auth,
-    )
-
-    assets_url_response_json = json.loads(asset_restaurant_id_response.text)
+    ))
+    
+    # asset_restaurant_id_response = requests.get(
+    #    f"https://{assets_url}/restaurant_assets/restaurants?filter[name]={restaurant_id}",
+    #    auth=aws_auth,
+    #)
+    # assets_url_response_json = json.loads(asset_restaurant_id_response.text)
     logger.info(f"Restaurant details : {assets_url_response_json}")
-
+    
     asset_restaurant_id = assets_url_response_json["data"][0]["id"]
 
     config["restaurantId"] = restaurant_id
