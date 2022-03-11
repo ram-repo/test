@@ -741,7 +741,7 @@ def confirm_certificate_delivery(k8s_name, assets_url, asset_restaurant_id):
     }
     headers = {"content-type": application_type}
 
-    if property_response.status_code != 200:
+    if property_response_json.status_code != 200:
         logger.error("API Endpoint is currently not responding")
     else:
         logger.info(
